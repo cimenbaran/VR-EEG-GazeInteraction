@@ -1,0 +1,20 @@
+{
+  "name": "com.cimen.openbci-unity",
+  "version": "0.1.0",
+  "displayName": "OpenBCI Unity",
+  "description": "Unity plugin for streaming OpenBCI Cyton EEG data (via a BrainFlow Python bridge) and driving gaze + EEG interaction in VR.",
+  "unity": "6000.3",
+  "keywords": [
+    "openbci",
+    "eeg",
+    "brainflow",
+    "bci",
+    "vr",
+    "gaze"
+  ],
+  "author": {
+    "name": "Baran Cimen",
+    "email": "cimenbaran@gmail.com"
+  },
+  "license": "MIT"
+}
