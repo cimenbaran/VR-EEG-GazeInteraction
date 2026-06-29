@@ -106,3 +106,21 @@ InitTestScene*.unity*
 
 # Auto-generated cache in Assets folder
 /[Aa]ssets/[Ss]ceneDependencyCache*
+
+# ── Python EEG bridge ──────────────────────────────────────────────
+# virtual environments (any common name)
+eeg/
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.python-version
+
+# ── OS / editor junk ───────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+*.swp
