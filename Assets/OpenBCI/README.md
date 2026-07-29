@@ -54,11 +54,26 @@ Link, just look at a cube and concentrate.
 
 - **Gaze** (head-ray) chooses the *candidate* cube.
 - An **EEG control metric** (default `Engagement = beta / (alpha + theta)`) is
-  normalized to `[0,1]` by an `AdaptiveNormalizer` (per-session auto-calibration, so
-  a fixed threshold works across people).
+  normalized to `[0,1]` by a `SignalNormalizer`, so a fixed threshold works across people.
 - Holding focus above `confirmThreshold` on a cube for `dwellTime` seconds **confirms**.
 
 Swap the metric (`RelaxIndex`, `Alpha`, …) on the interactor to change what "focus" means.
+
+### Normalization
+
+`SignalNormalizer` has three modes:
+
+| Mode | Baseline | Use for |
+|------|----------|---------|
+| `Calibrated` *(default)* | measured for `calibrationDuration`s, then **frozen** | **control** — sustained signal → sustained output |
+| `Adaptive` | continuously chases the signal | exploring a signal; output reflects *change*, decays to 0.5 |
+| `FixedRange` | none — linear map of `[rawMin, rawMax]` | fully direct, predictable mapping |
+
+Sit still during calibration. Call `interactor.Recalibrate()` (or press **R** with
+`KeyboardFocusSimulator` in the scene) to re-measure.
+
+Stability knobs: `spreadStds` (sensitivity), `outputSmoothing` (jitter vs. lag),
+`hysteresis` (threshold flicker), `dwellDecayRate` (how fast dwell drains on a dip).
 
 ## Roadmap
 

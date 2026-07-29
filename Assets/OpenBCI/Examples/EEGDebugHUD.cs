@@ -99,6 +99,15 @@ namespace OpenBCI.Examples
                 GUI.Label(new Rect(x, y, w, rowH), $"Phase: {interactor.phase}   Metric: {interactor.controlMetric}", _label);
                 y += rowH;
 
+                if (interactor.IsCalibrating)
+                {
+                    GUI.color = new Color(1f, 0.85f, 0.3f);
+                    GUI.Label(new Rect(x, y, w, rowH),
+                              $"CALIBRATING BASELINE — rest… {interactor.CalibrationProgress * 100f:F0}%", _header);
+                    GUI.color = Color.white;
+                    y += rowH;
+                }
+
                 // control value with threshold marker
                 DrawMeter(ref x, ref y, w, rowH, "Control", interactor.ControlValue, new Color(0.45f, 0.78f, 1f), true,
                           interactor.confirmThreshold);

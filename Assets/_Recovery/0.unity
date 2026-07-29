@@ -11525,7 +11525,7 @@ MonoBehaviour:
   cubeSize: 0.3
   distance: 2
   height: 1.4
-  phase: 3
+  phase: 2
   controlMetric: 6
   receiver: {fileID: 859181589}
   udpPort: 12345

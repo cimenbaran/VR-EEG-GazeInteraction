@@ -5,10 +5,13 @@ using OpenBCI.Interaction;
 namespace OpenBCI.Examples
 {
     /// <summary>
-    /// Simulates focus/unfocus without electrodes by feeding a manual control value
-    /// into a <see cref="GazeEEGInteractor"/>. Hold the key to "focus" (value ramps up),
-    /// release to "unfocus" (ramps down). The gradual ramp mimics how real EEG focus
-    /// rises over time, so dwell-based selection still behaves realistically.
+    /// Keyboard test harness for a <see cref="GazeEEGInteractor"/>.
+    ///
+    /// - Hold <see cref="focusKey"/> (default Space) to simulate focus without electrodes:
+    ///   the value ramps up while held and decays on release, mimicking how real EEG
+    ///   focus rises over time so dwell-based selection behaves realistically.
+    /// - Press <see cref="recalibrateKey"/> (default R) to re-measure the resting EEG
+    ///   baseline. This works with the real board too — it is not part of the simulation.
     /// </summary>
     public class KeyboardFocusSimulator : MonoBehaviour
     {
@@ -26,6 +29,10 @@ namespace OpenBCI.Examples
         [Tooltip("If false, the simulator stops overriding and EEG takes over again.")]
         public bool enableSimulation = true;
 
+        [Header("Calibration")]
+        [Tooltip("Press to re-measure the resting EEG baseline. Sit still while it runs.")]
+        public Key recalibrateKey = Key.R;
+
         float _value;
 
         void Awake()
@@ -35,7 +42,18 @@ namespace OpenBCI.Examples
 
         void Update()
         {
-            if (interactor == null) return;
+            // re-resolve until found: the interactor may be created after Awake
+            // (e.g. by EEGCubeDemo in Start).
+            if (interactor == null)
+            {
+                interactor = FindAnyObjectByType<GazeEEGInteractor>();
+                if (interactor == null) return;
+            }
+
+            // Recalibration applies to the real EEG path, so handle it regardless
+            // of whether simulation is currently overriding the control value.
+            if (Keyboard.current != null && Keyboard.current[recalibrateKey].wasPressedThisFrame)
+                interactor.Recalibrate();
 
             if (!enableSimulation)
             {

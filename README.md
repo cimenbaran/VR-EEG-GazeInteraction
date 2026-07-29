@@ -86,9 +86,25 @@ metrics, and interaction state.
 | **Move**   | The selected cube rises/falls with your focus level |
 
 **Selection model:** head-gaze chooses the candidate; an EEG metric
-(`Engagement = beta / (alpha + theta)`) is auto-normalized per session to a 0–1
-**control value**; holding it above a threshold for a dwell time confirms. The
-`IGazeProvider` seam allows swapping head-gaze for Quest 3 eye-tracking later.
+(`Engagement = beta / (alpha + theta)`) is normalized to a 0–1 **control value**;
+holding it above a threshold for a dwell time confirms. The `IGazeProvider` seam
+allows swapping head-gaze for Quest 3 eye-tracking later.
+
+### Calibration
+
+On entering Play mode the interactor measures your **resting baseline for ~5 seconds**
+— sit still until the HUD stops showing `CALIBRATING`. The baseline is then **frozen**,
+so a sustained rise in the metric produces a sustained high control value.
+
+Press **R** to re-measure the baseline at any time (after adjusting electrodes, or if
+control feels stuck high/low after a long session).
+
+> Normalizer modes: `Calibrated` (default, frozen baseline — use this for control),
+> `Adaptive` (baseline keeps chasing the signal, so output reflects *change* and decays
+> back to 0.5), and `FixedRange` (direct linear map of the raw metric).
+
+If you can't reach the threshold, lower `spreadStds`. If the value jitters, raise
+`outputSmoothing` or `hysteresis`.
 
 ---
 
@@ -96,6 +112,7 @@ metrics, and interaction state.
 
 - **`KeyboardFocusSimulator`** — hold **Space** to simulate focus (value ramps up),
   release to unfocus. Drives the full selection/move logic with no board needed.
+  **R** recalibrates (works with the real board too).
 - Or tick **Use Manual Control** on the interactor and drag the slider in Play mode.
 
 ---

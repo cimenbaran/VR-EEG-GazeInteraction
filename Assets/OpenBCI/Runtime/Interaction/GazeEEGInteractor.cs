@@ -39,8 +39,27 @@ namespace OpenBCI.Interaction
         [Range(0f, 1f)] public float confirmThreshold = 0.65f;
         [Tooltip("Seconds of sustained focus-on-target required to confirm a selection.")]
         public float dwellTime = 1.2f;
-        [Tooltip("EMA smoothing for the adaptive normalizer (smaller = slower calibration).")]
-        public float normalizerSmoothing = 0.02f;
+
+        [Header("Normalization")]
+        [Tooltip("Calibrated = baseline frozen after calibration (recommended for control). " +
+                 "Adaptive = baseline keeps chasing the signal (output drifts back to 0.5). " +
+                 "FixedRange = direct linear map of the raw metric.")]
+        public NormalizerMode normalizerMode = NormalizerMode.Calibrated;
+        [Tooltip("Seconds of resting baseline measured before control becomes active.")]
+        public float calibrationDuration = 5f;
+        [Tooltip("Std devs above baseline that map to 1.0. Lower = more sensitive.")]
+        public float spreadStds = 1.5f;
+        [Tooltip("Output smoothing time constant (s). Higher = smoother but laggier.")]
+        public float outputSmoothing = 0.4f;
+        [Tooltip("Raw metric range mapped to [0,1] when mode is FixedRange.")]
+        public float rawMin = 0f, rawMax = 2f;
+
+        [Header("Stability")]
+        [Tooltip("Once focused, control must fall this far below the threshold to disengage.")]
+        [Range(0f, 0.3f)] public float hysteresis = 0.05f;
+        [Tooltip("How fast dwell drains when focus drops, as a multiple of fill speed. " +
+                 "0 = hold progress, 1 = drain as fast as it filled.")]
+        [Range(0f, 4f)] public float dwellDecayRate = 0.5f;
 
         [Header("Behaviour")]
         [Tooltip("Looking away from the selected cube and re-confirming on another switches selection.")]
@@ -57,14 +76,29 @@ namespace OpenBCI.Interaction
         public EEGSelectable Selected { get; private set; }
 
         IGazeProvider _gaze;
-        AdaptiveNormalizer _normalizer;
+        SignalNormalizer _normalizer;
         ScopedLogger _log;
         float _dwell;
+        bool _focusLatched;   // hysteresis state
+
+        /// <summary>True while the resting baseline is still being measured.</summary>
+        public bool IsCalibrating => _normalizer != null && _normalizer.IsCalibrating
+                                     && normalizerMode == NormalizerMode.Calibrated
+                                     && !useManualControl;
+        public float CalibrationProgress => _normalizer?.CalibrationProgress ?? 1f;
+
+        /// <summary>Re-measure the resting baseline. Call this while the user rests.</summary>
+        public void Recalibrate()
+        {
+            _normalizer?.Recalibrate();
+            _log.Info("Recalibrating baseline — sit still and rest.");
+        }
 
         void Awake()
         {
             _log = OpenBCILogger.Scope(Cat);
-            _normalizer = new AdaptiveNormalizer(normalizerSmoothing);
+            _normalizer = new SignalNormalizer();
+            SyncNormalizerSettings();
 
             if (receiver == null) receiver = FindAnyObjectByType<OpenBCIReceiver>();
             if (receiver == null) _log.Warning("No OpenBCIReceiver found in scene.");
@@ -106,6 +140,17 @@ namespace OpenBCI.Interaction
             UpdateMovePhase();
         }
 
+        void SyncNormalizerSettings()
+        {
+            if (_normalizer == null) return;
+            _normalizer.Mode = normalizerMode;
+            _normalizer.CalibrationDuration = calibrationDuration;
+            _normalizer.SpreadStds = spreadStds;
+            _normalizer.OutputSmoothing = outputSmoothing;
+            _normalizer.RawMin = rawMin;
+            _normalizer.RawMax = rawMax;
+        }
+
         void UpdateControlValue()
         {
             if (useManualControl)
@@ -114,8 +159,10 @@ namespace OpenBCI.Interaction
                 return;
             }
             if (receiver == null || !receiver.HasData) return;
+
+            SyncNormalizerSettings();   // let inspector tweaks apply live
             float raw = receiver.GetMetricRaw(controlMetric);
-            ControlValue = _normalizer.Normalize(raw);
+            ControlValue = _normalizer.Normalize(raw, Time.deltaTime);
         }
 
         EEGSelectable Raycast()
@@ -136,28 +183,50 @@ namespace OpenBCI.Interaction
 
         void UpdateSelection(EEGSelectable target)
         {
-            bool focused = ControlValue >= confirmThreshold;
+            // Don't act on control until the baseline is established.
+            if (IsCalibrating)
+            {
+                _dwell = 0f;
+                _focusLatched = false;
+                if (target != null) target.SetCharge(0f);
+                return;
+            }
+
+            // Hysteresis: engaging needs the full threshold, staying engaged needs less.
+            // Prevents the dwell from flickering when control hovers near the line.
+            float releaseThreshold = confirmThreshold - hysteresis;
+            _focusLatched = _focusLatched
+                ? ControlValue >= releaseThreshold
+                : ControlValue >= confirmThreshold;
 
             // Already selected this target: nothing to charge.
             bool targetIsSelected = target != null && target == Selected;
-
             bool canCharge = target != null && !targetIsSelected &&
                              (Selected == null || allowReselect);
 
-            if (canCharge && focused)
-            {
-                _dwell += Time.deltaTime;
-                target.SetCharge(Mathf.Clamp01(_dwell / dwellTime));
-                if (_dwell >= dwellTime)
-                {
-                    Select(target);
-                    _dwell = 0f;
-                }
-            }
-            else
+            if (!canCharge)
             {
                 _dwell = 0f;
                 if (target != null && !targetIsSelected) target.SetCharge(0f);
+                return;
+            }
+
+            if (_focusLatched)
+            {
+                _dwell += Time.deltaTime;
+            }
+            else
+            {
+                // drain instead of hard-resetting, so a momentary dip doesn't wipe progress
+                _dwell = Mathf.Max(0f, _dwell - Time.deltaTime * dwellDecayRate);
+            }
+
+            target.SetCharge(Mathf.Clamp01(_dwell / Mathf.Max(0.01f, dwellTime)));
+
+            if (_dwell >= dwellTime)
+            {
+                Select(target);
+                _dwell = 0f;
             }
         }
 

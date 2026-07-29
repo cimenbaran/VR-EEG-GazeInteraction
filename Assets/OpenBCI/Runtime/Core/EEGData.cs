@@ -54,53 +54,160 @@ namespace OpenBCI.Core
     /// This is what lets a fixed UI threshold (e.g. "confirm at 0.7") work across
     /// different people and sessions without manual calibration.
     /// </summary>
-    public class AdaptiveNormalizer
+    public enum NormalizerMode
     {
-        readonly float _alpha;       // EMA smoothing factor (0..1), smaller = slower
-        readonly float _spreadStds;  // how many std devs map to the 0..1 edges
-        float _mean;
-        float _var;
-        bool _seeded;
+        /// <summary>
+        /// Baseline is measured for a fixed period, then FROZEN. A sustained rise in the
+        /// raw metric produces a sustained high output. Use this for control.
+        /// </summary>
+        Calibrated = 0,
 
-        public AdaptiveNormalizer(float smoothing = 0.02f, float spreadStds = 2f)
-        {
-            _alpha = Mathf.Clamp01(smoothing);
-            _spreadStds = Mathf.Max(0.01f, spreadStds);
-        }
+        /// <summary>
+        /// Baseline continuously chases the signal, so the output reflects *change*
+        /// rather than level — a sustained high signal decays back toward 0.5.
+        /// Useful for exploring a signal, wrong for holding a control.
+        /// </summary>
+        Adaptive = 1,
 
-        /// <summary>The last normalized output, in [0,1].</summary>
+        /// <summary>
+        /// No statistics: the raw metric is mapped linearly from [rawMin, rawMax] to [0,1].
+        /// Fully predictable and direct, but you must pick the range for your setup.
+        /// </summary>
+        FixedRange = 2
+    }
+
+    /// <summary>
+    /// Converts a noisy, person-specific raw metric into a stable [0,1] control value.
+    ///
+    /// The default <see cref="NormalizerMode.Calibrated"/> mode measures your resting
+    /// baseline for a few seconds and then locks it, so holding an elevated metric holds
+    /// an elevated output (unlike a continuously-adapting baseline, which drifts back to
+    /// the middle). Output smoothing is applied on top to remove frame-to-frame jitter.
+    /// </summary>
+    public class SignalNormalizer
+    {
+        public NormalizerMode Mode = NormalizerMode.Calibrated;
+
+        /// <summary>Seconds of resting data collected before the baseline is frozen.</summary>
+        public float CalibrationDuration = 5f;
+
+        /// <summary>How many standard deviations above/below baseline map to 1 / 0.</summary>
+        public float SpreadStds = 1.5f;
+
+        /// <summary>Smoothing time constant (seconds) applied to the output. 0 disables.</summary>
+        public float OutputSmoothing = 0.4f;
+
+        /// <summary>Range used by <see cref="NormalizerMode.FixedRange"/>.</summary>
+        public float RawMin = 0f, RawMax = 1f;
+
+        /// <summary>Adaptation rate used by <see cref="NormalizerMode.Adaptive"/>.</summary>
+        public float AdaptiveRate = 0.02f;
+
+        // baseline statistics (Welford accumulation during calibration)
+        double _mean, _m2;
+        int _count;
+        float _frozenMean, _frozenStd;
+
+        public bool IsCalibrating { get; private set; } = true;
+        public float CalibrationProgress { get; private set; }
+        /// <summary>Last smoothed output, in [0,1].</summary>
         public float Value { get; private set; } = 0.5f;
+        /// <summary>Output before smoothing, in [0,1].</summary>
+        public float RawValue { get; private set; } = 0.5f;
 
-        public void Reset()
+        float _elapsed;
+
+        /// <summary>Discard the baseline and start measuring it again.</summary>
+        public void Recalibrate()
         {
-            _seeded = false;
-            _mean = _var = 0f;
-            Value = 0.5f;
+            _mean = _m2 = 0;
+            _count = 0;
+            _elapsed = 0f;
+            _frozenMean = 0f;
+            _frozenStd = 0f;
+            IsCalibrating = true;
+            CalibrationProgress = 0f;
+            Value = RawValue = 0.5f;
         }
 
-        /// <summary>Feed a new raw sample, get back a calibrated [0,1] value.</summary>
-        public float Normalize(float raw)
+        /// <summary>Feed a new raw sample plus the elapsed time, get back a [0,1] value.</summary>
+        public float Normalize(float raw, float deltaTime)
         {
             if (float.IsNaN(raw) || float.IsInfinity(raw)) return Value;
 
-            if (!_seeded)
+            switch (Mode)
             {
-                _mean = raw;
-                _var = 0f;
-                _seeded = true;
-                Value = 0.5f;
-                return Value;
+                case NormalizerMode.FixedRange:
+                    IsCalibrating = false;
+                    CalibrationProgress = 1f;
+                    RawValue = Mathf.InverseLerp(RawMin, RawMax, raw);
+                    break;
+
+                case NormalizerMode.Adaptive:
+                    IsCalibrating = false;
+                    CalibrationProgress = 1f;
+                    RawValue = AdaptiveStep(raw);
+                    break;
+
+                default: // Calibrated
+                    RawValue = CalibratedStep(raw, deltaTime);
+                    break;
             }
 
-            float delta = raw - _mean;
-            _mean += _alpha * delta;
-            // EMA of variance (West's incremental form)
-            _var = (1f - _alpha) * (_var + _alpha * delta * delta);
+            RawValue = Mathf.Clamp01(RawValue);
 
-            float std = Mathf.Sqrt(Mathf.Max(_var, 1e-12f));
-            float z = (raw - _mean) / std;                 // standard score
-            Value = Mathf.Clamp01(0.5f + z / (2f * _spreadStds));
+            // dt-aware exponential smoothing so the result is framerate independent
+            if (OutputSmoothing > 1e-4f)
+            {
+                float a = 1f - Mathf.Exp(-deltaTime / OutputSmoothing);
+                Value = Mathf.Lerp(Value, RawValue, a);
+            }
+            else Value = RawValue;
+
             return Value;
+        }
+
+        float CalibratedStep(float raw, float deltaTime)
+        {
+            if (IsCalibrating)
+            {
+                // Welford's online mean/variance over the calibration window
+                _count++;
+                double d = raw - _mean;
+                _mean += d / _count;
+                _m2 += d * (raw - _mean);
+
+                _elapsed += deltaTime;
+                CalibrationProgress = Mathf.Clamp01(_elapsed / Mathf.Max(0.1f, CalibrationDuration));
+
+                if (CalibrationProgress >= 1f && _count > 1)
+                {
+                    _frozenMean = (float)_mean;
+                    _frozenStd = Mathf.Sqrt((float)(_m2 / (_count - 1)));
+                    if (_frozenStd < 1e-6f) _frozenStd = Mathf.Max(1e-6f, Mathf.Abs(_frozenMean) * 0.1f);
+                    IsCalibrating = false;
+                }
+                return 0.5f; // neutral output while measuring the baseline
+            }
+
+            // baseline is frozen: sustained elevation -> sustained high output
+            float z = (raw - _frozenMean) / _frozenStd;
+            return 0.5f + z / (2f * Mathf.Max(0.01f, SpreadStds));
+        }
+
+        float AdaptiveStep(float raw)
+        {
+            float a = Mathf.Clamp01(AdaptiveRate);
+            if (_count == 0)
+            {
+                _mean = raw; _m2 = 0; _count = 1;
+                return 0.5f;
+            }
+            float delta = raw - (float)_mean;
+            _mean += a * delta;
+            _m2 = (1 - a) * (_m2 + a * delta * delta);
+            float std = Mathf.Sqrt(Mathf.Max((float)_m2, 1e-12f));
+            return 0.5f + (raw - (float)_mean) / std / (2f * Mathf.Max(0.01f, SpreadStds));
         }
     }
 }
