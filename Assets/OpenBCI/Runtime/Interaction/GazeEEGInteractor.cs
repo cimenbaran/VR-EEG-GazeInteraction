@@ -53,6 +53,14 @@ namespace OpenBCI.Interaction
         public float outputSmoothing = 0.4f;
         [Tooltip("Raw metric range mapped to [0,1] when mode is FixedRange.")]
         public float rawMin = 0f, rawMax = 2f;
+        [Tooltip("Feed log10(metric) to the normalizer instead of the raw ratio. Band power is " +
+                 "log-normally distributed, so the linear ratio is heavily skewed and its " +
+                 "standard deviation is dominated by a few large samples — which makes the " +
+                 "z-score scale meaningless and the control value flip between 0 and 1.")]
+        public bool useLogScaling = true;
+        [Tooltip("Flip the control direction. Turn this on if focusing drives the bar DOWN — " +
+                 "the sign of a composite index depends on electrode placement and montage.")]
+        public bool invertControl = false;
 
         [Header("Stability")]
         [Tooltip("Once focused, control must fall this far below the threshold to disengage.")]
@@ -64,6 +72,11 @@ namespace OpenBCI.Interaction
         [Header("Behaviour")]
         [Tooltip("Looking away from the selected cube and re-confirming on another switches selection.")]
         public bool allowReselect = true;
+        [Tooltip("In Move phase, only drive the selected object while gaze is actually resting on it.")]
+        public bool requireGazeToMove = true;
+        [Tooltip("When gaze leaves the selected object: off = freeze it where it is, " +
+                 "on = ease it back to its resting position.")]
+        public bool releaseToRestOnGazeLoss = false;
 
         [Header("Testing")]
         [Tooltip("When true, ControlValue comes from ManualControl instead of EEG — lets you simulate focus without electrodes.")]
@@ -72,14 +85,20 @@ namespace OpenBCI.Interaction
 
         // ── exposed runtime state (handy for UI / debugging) ─────────────────
         public float ControlValue { get; private set; }   // normalized 0..1
+        /// <summary>The un-normalized metric straight off the receiver, for debugging.</summary>
+        public float RawMetric { get; private set; }
         public EEGSelectable Hovered { get; private set; }
         public EEGSelectable Selected { get; private set; }
+        /// <summary>True while the selected object is actually being driven by EEG.</summary>
+        public bool IsDriving { get; private set; }
 
         IGazeProvider _gaze;
         SignalNormalizer _normalizer;
         ScopedLogger _log;
         float _dwell;
         bool _focusLatched;   // hysteresis state
+        int _lastPacket = -1;
+        float _lastPacketTime;
 
         /// <summary>True while the resting baseline is still being measured.</summary>
         public bool IsCalibrating => _normalizer != null && _normalizer.IsCalibrating
@@ -161,8 +180,28 @@ namespace OpenBCI.Interaction
             if (receiver == null || !receiver.HasData) return;
 
             SyncNormalizerSettings();   // let inspector tweaks apply live
-            float raw = receiver.GetMetricRaw(controlMetric);
-            ControlValue = _normalizer.Normalize(raw, Time.deltaTime);
+
+            // Step the normalizer once per EEG packet, not once per frame. The bridge
+            // sends a handful of packets a second; Update runs at ~72-90 Hz in the
+            // headset. Re-feeding the same sample every frame inflates the sample
+            // count and collapses the measured spread, after which the z-score maps
+            // ordinary noise onto the full 0..1 range.
+            int packet = receiver.PacketCount;
+            if (packet == _lastPacket) return;
+
+            float dt = _lastPacketTime > 0f ? Time.time - _lastPacketTime : Time.deltaTime;
+            _lastPacket = packet;
+            _lastPacketTime = Time.time;
+
+            RawMetric = receiver.GetMetricRaw(controlMetric);
+
+            // Band power is log-normal, so the composite ratios are strongly right-skewed.
+            // Taking the log first makes the distribution roughly symmetric, which is what
+            // the mean/std baseline in SignalNormalizer actually assumes.
+            float raw = useLogScaling ? Mathf.Log10(Mathf.Max(RawMetric, 1e-6f)) : RawMetric;
+
+            float value = _normalizer.Normalize(raw, dt);
+            ControlValue = invertControl ? 1f - value : value;
         }
 
         EEGSelectable Raycast()
@@ -232,10 +271,14 @@ namespace OpenBCI.Interaction
 
         void Select(EEGSelectable target)
         {
-            if (Selected != null && Selected != target)
+            // Clear every other selectable, not just the tracked one. Selection state can
+            // otherwise be left behind on an object (e.g. one selected before this
+            // interactor started), leaving it stuck in the selected color.
+            foreach (var s in FindObjectsByType<EEGSelectable>(FindObjectsSortMode.None))
             {
-                Selected.SetSelected(false);
-                if (Selected.TryGetComponent<EEGMover>(out var prevMover)) prevMover.Release();
+                if (s == target || !s.IsSelected) continue;
+                s.SetSelected(false);
+                if (s.TryGetComponent<EEGMover>(out var prevMover)) prevMover.Release();
             }
             Selected = target;
             Selected.SetSelected(true);
@@ -246,9 +289,26 @@ namespace OpenBCI.Interaction
 
         void UpdateMovePhase()
         {
+            IsDriving = false;
             if (phase != Phase.Move || Selected == null) return;
-            if (Selected.TryGetComponent<EEGMover>(out var mover))
+            if (!Selected.TryGetComponent<EEGMover>(out var mover)) return;
+
+            // Gaze gates the drive: look away and the object stops responding, so you
+            // can rest your focus without the selection drifting off on its own.
+            bool gazeOnSelected = !requireGazeToMove || Hovered == Selected;
+            if (gazeOnSelected)
+            {
+                IsDriving = true;
                 mover.SetControl(ControlValue);
+            }
+            else if (releaseToRestOnGazeLoss)
+            {
+                mover.Release();
+            }
+            else
+            {
+                mover.Hold();
+            }
         }
     }
 }

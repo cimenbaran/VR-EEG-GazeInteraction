@@ -58,6 +58,16 @@ namespace OpenBCI.Interaction
             _target = 0f;
         }
 
+        /// <summary>
+        /// Stop responding to control but stay where you are. Used when gaze leaves the
+        /// selected object — the object freezes instead of sagging back to rest.
+        /// </summary>
+        public void Hold()
+        {
+            _active = false;
+            _target = _current;
+        }
+
         void Update()
         {
             if (!_hasRest) return;

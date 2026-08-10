@@ -3,7 +3,8 @@
     "rootNamespace": "OpenBCI.Examples",
     "references": [
         "OpenBCI.Runtime",
-        "Unity.InputSystem"
+        "Unity.InputSystem",
+        "Unity.TextMeshPro"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
