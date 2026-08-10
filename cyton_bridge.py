@@ -7,6 +7,10 @@ Usage:
   python cyton_bridge.py --serial-port COM3 --mains 60       # Windows, 60 Hz power
   python cyton_bridge.py --serial-port /dev/cu.usbserial-DM  # macOS
 
+  # only use electrodes 3, 6 and 8 (numbered as in the OpenBCI GUI), and print a
+  # per-channel quality report every 2 s so you can spot dead/railed electrodes:
+  python cyton_bridge.py --serial-port COM3 --channels 3,6,8 --quality-interval 2
+
 Streams JSON to udp://127.0.0.1:12345 (override with --host / --port).
 """
 
@@ -53,6 +57,12 @@ def main():
                         help="UDP destination host (use Quest LAN IP for standalone streaming)")
     parser.add_argument("--port", type=int, default=12345,
                         help="UDP destination port")
+    parser.add_argument("--channels", default="",
+                        help="Comma-separated channels to use, numbered as in the OpenBCI "
+                             "GUI (1-8), e.g. --channels 3,6,8. Default: all channels.")
+    parser.add_argument("--quality-interval", type=float, default=0.0,
+                        help="Seconds between per-channel quality reports (0 = off). "
+                             "Prints RMS per channel so you can spot dead/railed electrodes.")
     args = parser.parse_args()
 
     BoardShim.enable_dev_board_logger()
@@ -69,9 +79,28 @@ def main():
         print(f"[bridge] Connecting to Cyton on {args.serial_port}")
 
     board = BoardShim(board_id, params)
-    eeg_channels = BoardShim.get_eeg_channels(board_id)
+    all_eeg_channels = BoardShim.get_eeg_channels(board_id)
     sr = BoardShim.get_sampling_rate(board_id)
     window = sr * WINDOW_SECS
+
+    # Resolve --channels (1-based, matching the OpenBCI GUI) to data-array rows.
+    if args.channels.strip():
+        try:
+            picked = [int(c) for c in args.channels.split(",") if c.strip()]
+        except ValueError:
+            parser.error("--channels must be comma-separated integers, e.g. 3,6,8")
+        for c in picked:
+            if not 1 <= c <= len(all_eeg_channels):
+                parser.error(f"channel {c} out of range 1..{len(all_eeg_channels)}")
+        if not picked:
+            parser.error("--channels selected no channels")
+        channel_numbers = picked
+    else:
+        channel_numbers = list(range(1, len(all_eeg_channels) + 1))
+
+    eeg_channels = [all_eeg_channels[c - 1] for c in channel_numbers]
+    print(f"[bridge] Using channels {channel_numbers} "
+          f"({len(channel_numbers)} of {len(all_eeg_channels)})")
 
     board.prepare_session()
     board.start_stream()
@@ -80,6 +109,7 @@ def main():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     interval = 1.0 / SEND_HZ
     last_send = time.monotonic()
+    last_quality = 0.0
 
     try:
         while True:
@@ -113,11 +143,30 @@ def main():
             for band, vals in band_accum.items():
                 payload[band] = float(np.log10(np.mean(vals) + 1e-10))
 
-            # also send the latest raw sample (µV, all channels) for waveform display
+            # latest raw sample (µV) for the selected channels, for waveform display
             payload["raw"] = [float(data[ch, -1]) for ch in eeg_channels]
+            payload["channels"] = channel_numbers
 
             msg = json.dumps(payload).encode()
             sock.sendto(msg, (args.host, args.port))
+
+            # periodic per-channel quality report over ALL channels, so you can see
+            # which electrodes are usable and adjust --channels accordingly
+            if args.quality_interval > 0 and now - last_quality >= args.quality_interval:
+                last_quality = now
+                parts = []
+                for i, ch in enumerate(all_eeg_channels, start=1):
+                    sig = data[ch]
+                    rms = float(np.sqrt(np.mean(np.square(sig - np.mean(sig)))))
+                    if rms < 0.1:
+                        state = "DEAD"      # flat / railed / no contact
+                    elif rms > 100.0:
+                        state = "NOISY"     # artifact or bad contact
+                    else:
+                        state = "ok"
+                    mark = "*" if i in channel_numbers else " "
+                    parts.append(f"{mark}{i}:{rms:7.2f}µV {state}")
+                print("[quality] " + " | ".join(parts))
 
     except KeyboardInterrupt:
         print("\n[bridge] Stopping...")

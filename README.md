@@ -66,6 +66,24 @@ python cyton_bridge.py --serial-port COM3 --mains 60                     # Windo
 > The serial port is exclusive — **fully quit the OpenBCI GUI** before running the bridge.
 > Use `--mains 50` (EU/UK/TR) or `--mains 60` (US) to match your power-line frequency.
 
+**Selecting channels.** Band powers are averaged across channels, so dead or railed
+electrodes drag the average toward noise. Use only the electrodes with good contact
+(numbered as in the OpenBCI GUI):
+
+```bash
+python cyton_bridge.py --serial-port COM3 --channels 3,6,8 --quality-interval 2
+```
+
+`--quality-interval` prints an RMS report for **all** channels every N seconds, marking
+the selected ones with `*`, so you can see which electrodes are usable:
+
+```
+[quality]  1:   0.00µV DEAD |  2:   0.00µV DEAD | *3:  12.40µV ok | ... | *8:  15.20µV ok
+```
+
+`DEAD` (<0.1 µV RMS) means no contact / railed; `NOISY` (>100 µV RMS) means artifacts or
+a loose electrode. Aim for roughly 5–50 µV RMS.
+
 ### 2. Unity
 
 1. Open the project in Unity 6.3.
