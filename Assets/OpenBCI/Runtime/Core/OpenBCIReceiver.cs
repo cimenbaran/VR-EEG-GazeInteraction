@@ -35,6 +35,15 @@ namespace OpenBCI.Core
         public bool HasData { get; private set; }
         public double Timestamp { get; private set; }
 
+        /// <summary>
+        /// Increments once per decoded packet. Consumers that accumulate statistics
+        /// (e.g. <see cref="SignalNormalizer"/>) must step on this rather than per
+        /// frame — the bridge sends a few packets per second while Update runs at
+        /// headset framerate, so per-frame stepping would feed the same sample
+        /// dozens of times and destroy the variance estimate.
+        /// </summary>
+        public int PacketCount { get; private set; }
+
         /// <summary>Band powers in log10 power (as sent by the bridge).</summary>
         public float Delta { get; private set; }
         public float Theta { get; private set; }
@@ -138,6 +147,7 @@ namespace OpenBCI.Core
                 Beta  = p.Beta;
                 Gamma = p.Gamma;
                 RawSample = p.Raw;
+                PacketCount++;
 
                 if (!HasData)
                 {
