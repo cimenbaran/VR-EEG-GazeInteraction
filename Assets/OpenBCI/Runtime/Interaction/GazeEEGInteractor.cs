@@ -77,6 +77,12 @@ namespace OpenBCI.Interaction
         [Tooltip("When gaze leaves the selected object: off = freeze it where it is, " +
                  "on = ease it back to its resting position.")]
         public bool releaseToRestOnGazeLoss = false;
+        [Tooltip("Move phase: after gaze leaves the selected object for longer than " +
+                 "Release Grace Time, drop the selection so it reverts to its normal color.")]
+        public bool deselectOnGazeLoss = true;
+        [Tooltip("Seconds gaze may rest away from the selected object before it is released. " +
+                 "Brief glances under this window keep the selection.")]
+        public float releaseGraceTime = 1.5f;
 
         [Header("Testing")]
         [Tooltip("When true, ControlValue comes from ManualControl instead of EEG — lets you simulate focus without electrodes.")]
@@ -97,6 +103,7 @@ namespace OpenBCI.Interaction
         ScopedLogger _log;
         float _dwell;
         bool _focusLatched;   // hysteresis state
+        float _gazeAwayTime;  // seconds gaze has rested away from the selected object
         int _lastPacket = -1;
         float _lastPacketTime;
 
@@ -208,7 +215,11 @@ namespace OpenBCI.Interaction
         {
             if (_gaze == null || !_gaze.TryGetGazeRay(out var ray)) return null;
             if (Physics.Raycast(ray, out var hit, maxDistance, selectableMask, QueryTriggerInteraction.Ignore))
+            {
+                // A hit on a moving object's gaze-lock volume resolves to that object.
+                if (hit.collider.TryGetComponent<GazeLockProxy>(out var proxy)) return proxy.target;
                 return hit.collider.GetComponentInParent<EEGSelectable>();
+            }
             return null;
         }
 
@@ -278,13 +289,44 @@ namespace OpenBCI.Interaction
             {
                 if (s == target || !s.IsSelected) continue;
                 s.SetSelected(false);
-                if (s.TryGetComponent<EEGMover>(out var prevMover)) prevMover.Release();
+                if (s.TryGetComponent<EEGMover>(out var prevMover))
+                {
+                    prevMover.SetGazeLock(false);
+                    prevMover.Release();
+                }
             }
             Selected = target;
             Selected.SetSelected(true);
+            _gazeAwayTime = 0f;
             _log.Success($"Selected '{Selected.name}'");
 
-            if (Selected.TryGetComponent<EEGMover>(out var mover)) mover.CaptureRest();
+            // Turn on the gaze-lock volume so the ray keeps hitting this object while it
+            // travels. Rest position is whatever the mover captured on enable (its spawn
+            // spot) — we deliberately don't re-capture here, so release always returns the
+            // object to its original position rather than to wherever it was re-grabbed.
+            if (Selected.TryGetComponent<EEGMover>(out var mover)) mover.SetGazeLock(true);
+        }
+
+        /// <summary>
+        /// Drop the current selection: the object reverts to its normal color, stops
+        /// responding to control, and eases back to its original resting position.
+        /// </summary>
+        void Deselect()
+        {
+            if (Selected == null) return;
+
+            if (Selected.TryGetComponent<EEGMover>(out var mover))
+            {
+                mover.SetGazeLock(false);
+                mover.Release();   // always return to the original position on release
+            }
+            Selected.SetSelected(false);
+            _log.Info($"Released '{Selected.name}'");
+
+            Selected = null;
+            _dwell = 0f;
+            _focusLatched = false;
+            _gazeAwayTime = 0f;
         }
 
         void UpdateMovePhase()
@@ -298,17 +340,23 @@ namespace OpenBCI.Interaction
             bool gazeOnSelected = !requireGazeToMove || Hovered == Selected;
             if (gazeOnSelected)
             {
+                _gazeAwayTime = 0f;
                 IsDriving = true;
                 mover.SetControl(ControlValue);
+                return;
             }
-            else if (releaseToRestOnGazeLoss)
+
+            // Gaze is off the selected object. Short glances just pause the drive;
+            // sustained gaze loss releases the selection so it reverts to normal.
+            _gazeAwayTime += Time.deltaTime;
+            if (deselectOnGazeLoss && _gazeAwayTime >= releaseGraceTime)
             {
-                mover.Release();
+                Deselect();
+                return;
             }
-            else
-            {
-                mover.Hold();
-            }
+
+            if (releaseToRestOnGazeLoss) mover.Release();
+            else mover.Hold();
         }
     }
 }

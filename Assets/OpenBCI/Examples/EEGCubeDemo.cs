@@ -5,7 +5,7 @@ using OpenBCI.Interaction;
 namespace OpenBCI.Examples
 {
     /// <summary>
-    /// One-component demo: spawns a row of cubes in front of the camera and wires up
+    /// One-component demo: spawns cubes on a circle around the player and wires up
     /// the gaze + EEG interactor. Drop this on an empty GameObject and press Play.
     ///
     /// Set <see cref="phase"/> to walk through the project's three milestones:
@@ -18,8 +18,10 @@ namespace OpenBCI.Examples
         [Header("Scene")]
         [Tooltip("How many cubes to spawn (1 for the Select milestone).")]
         public int cubeCount = 3;
+        [Tooltip("Arc distance between adjacent cube centers, in meters. Small counts stay clustered in front of the player.")]
         public float spacing = 0.6f;
         public float cubeSize = 0.3f;
+        [Tooltip("Radius of the circle the cubes sit on, centered on the player at world origin.")]
         public float distance = 2f;
         public float height = 1.4f;
 
@@ -45,20 +47,34 @@ namespace OpenBCI.Examples
                 }
             }
 
-            var cam = Camera.main;
-            Vector3 origin = cam != null
-                ? cam.transform.position + cam.transform.forward * distance
-                : new Vector3(0, height, distance);
-            origin.y = height;
-            Vector3 right = cam != null ? cam.transform.right : Vector3.right;
+            Vector3 center = new Vector3(0f, height, 0f);
+            float radius = Mathf.Max(0.01f, distance);
 
             int n = Mathf.Max(1, cubeCount);
-            float start = -(n - 1) * 0.5f * spacing;
+            // Fixed angular gap so small counts stay clustered in front of the player.
+            float anglePerCube = spacing / radius;
+            float totalArc = (n - 1) * anglePerCube;
+            float startAngle;
+            if (totalArc >= 2f * Mathf.PI)
+            {
+                // Arc would wrap past a full circle: fall back to an even ring.
+                anglePerCube = 2f * Mathf.PI / n;
+                startAngle = 0f;
+            }
+            else
+            {
+                // Center the arc on world +Z, fanning out symmetrically.
+                startAngle = -totalArc * 0.5f;
+            }
+
             for (int i = 0; i < n; i++)
             {
+                float angleDeg = (startAngle + i * anglePerCube) * Mathf.Rad2Deg;
+                Vector3 dir = Quaternion.AngleAxis(angleDeg, Vector3.up) * Vector3.forward;
+
                 var cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
                 cube.name = $"EEGCube_{i}";
-                cube.transform.position = origin + right * (start + i * spacing);
+                cube.transform.position = center + dir * radius;
                 cube.transform.localScale = Vector3.one * cubeSize;
                 cube.AddComponent<EEGSelectable>();
                 cube.AddComponent<EEGMover>();
